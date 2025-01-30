@@ -29,12 +29,14 @@ create_stack(main, u64, 128 * 1000);
 create_stack(call, u64, 16 * 1000);
 
 #define push(stack, value)                                                                                                     \
-    (stack[ cat(stack, _pointer)++ >= cat(stack, _size) ? error("Stack overflow (" #stack ")") : (cat(stack, _pointer) - 1) ]  \
+    (stack                                                                                                                     \
+         [ cat(stack, _pointer)++ >= cat(stack, _size) ? error("Stack overflow %s (" #stack ")", names[ inst.op ])             \
+                                                       : (cat(stack, _pointer) - 1) ]                                          \
      = value)
-#define pop(stack) (stack[ --cat(stack, _pointer) < 0 ? error("Stack underflow (" #stack ")") : cat(stack, _pointer) ])
+#define pop(stack) (i64)(stack[ --cat(stack, _pointer) < 0 ? error("Stack underflow (" #stack ")") : cat(stack, _pointer) ])
 #define pop2(stack, l, r)                                                                                                      \
-    __auto_type l = pop(stack);                                                                                                \
-    __auto_type r = pop(stack)
+    i64 l = pop(stack);                                                                                                        \
+    i64 r = pop(stack)
 #define peek(stack) (stack[ cat(stack, _pointer) - 1 ])
 #define item(value, code)                                                                                                      \
     case value: {                                                                                                              \
@@ -61,25 +63,30 @@ enum opcode : byte {
     d_halt,
     m_pop,
     n_dup,
+    nn_dup,
     dn_const,
-    m_call,
     d_call,
+    d_jmp,
     ret,
     mmnn_swap,
     mmn_add,
     mmn_sub,
     mmn_mul,
     mmn_div,
+    mmn_mod,
     mmn_eq,
-    m_callnz,
+    mmn_gt,
+    mmn_lt,
+    mn_not,
     d_callnz,
+    d_jmpnz,
     sdm_add_proc,
     d_call_proc,
     d_call_aux
 };
-const string names[]
-    = { "d_halt",  "m_pop",   "n_dup",   "dn_const", "m_call",  "d_call",  "ret",          "mmnn_swap",   "mmn_add",
-        "mmn_sub", "mmn_mul", "mmn_div", "mmn_eq",   "m_callz", "d_callz", "sdm_add_proc", "d_call_proc", "d_call_aux" };
+const string names[] = { "d_halt",    "m_pop",   "n_dup",    "nn_dup",  "dn_const",     "d_call",      "d_jmp",     "ret",
+                         "mmnn_swap", "mmn_add", "mmn_sub",  "mmn_mul", "mmn_div",      "mmn_mod",     "mmn_eq",    "mmn_gt",
+                         "mmn_lt",    "mn_not",  "d_callnz", "d_jmpnz", "sdm_add_proc", "d_call_proc", "d_call_aux" };
 
 struct op {
     enum opcode op;
@@ -87,6 +94,7 @@ struct op {
 };
 
 void cycle(u64 *cur, struct op inst) {
+    // printf("{ %s, %i }\n", names[inst.op], inst.data);
     switch (inst.op) {
         item(d_halt, exitcode = inst.data; powered = 0);
         item(m_pop, (void) pop(main_stack));
@@ -95,23 +103,23 @@ void cycle(u64 *cur, struct op inst) {
             push(main_stack, val);
         });
         item(dn_const, push(main_stack, inst.data));
-        item(m_call, {
-            u64 addr = pop(main_stack);
-            push(call_stack, *cur);
-            *cur += addr - 1;
-        });
         item(d_call, {
             push(call_stack, *cur);
             *cur += inst.data - 1;
         });
-        item(ret, {
-            if (call_stack_pointer == 1) powered = 0;
-            *cur = pop(call_stack);
-        });
+        item(d_jmp, { *cur += inst.data - 1; });
+        item(ret, *cur = pop(call_stack));
         item(mmnn_swap, {
             pop2(main_stack, a, b);
             push(main_stack, a);
             push(main_stack, b);
+        });
+        item(nn_dup, {
+            pop2(main_stack, a, b);
+            push(main_stack, b);
+            push(main_stack, a);
+            push(main_stack, b);
+            push(main_stack, a);
         });
         item(mmn_add, {
             pop2(main_stack, a, b);
@@ -130,16 +138,26 @@ void cycle(u64 *cur, struct op inst) {
             if (a == 0) error("Divide by zero");
             push(main_stack, b / a);
         });
+        item(mmn_mod, {
+            pop2(main_stack, a, b);
+            if (a == 0) error("Modulo by zero");
+            push(main_stack, b % a);
+        });
         item(mmn_eq, {
             pop2(main_stack, a, b);
             push(main_stack, a == b);
         });
-        item(m_callnz, {
-            pop2(main_stack, a, addr);
-            if (a == 0) {
-                push(call_stack, *cur);
-                *cur += addr - 1;
-            }
+        item(mmn_gt, {
+            pop2(main_stack, a, b);
+            push(main_stack, a > b);
+        });
+        item(mmn_lt, {
+            pop2(main_stack, a, b);
+            push(main_stack, a < b);
+        });
+        item(mn_not, {
+            u64 a = pop(main_stack);
+            push(main_stack, !a);
         });
         item(d_callnz, {
             u64 a = pop(main_stack);
@@ -147,6 +165,10 @@ void cycle(u64 *cur, struct op inst) {
                 push(call_stack, *cur);
                 *cur += inst.data - 1;
             }
+        });
+        item(d_jmpnz, {
+            u64 a = pop(main_stack);
+            if (a != 0) *cur += inst.data - 1;
         });
         item(sdm_add_proc, {
             u64 addr = pop(main_stack);
@@ -170,7 +192,20 @@ void run(u64 size, struct op *code) {
     for (u64 i = 0; (i < size) && powered; i++) cycle(&i, code[ i ]);
 }
 
-void print_aux(i32 data) { putchar(data == 0 ? pop(main_stack) : data); }
+void aux(i32 data) {
+    if (data == 1) {
+        putchar(pop(main_stack));
+    } else if (data == 2) {
+        printf("%li", pop(main_stack));
+    } else if (data == 3) {
+        for (u64 i = 0; i < main_stack_pointer; i++) printf("- %li\n", main_stack[ i ]);
+        for (u64 i = 0; i < call_stack_pointer; i++) printf("+ %li\n", call_stack[ i ]);
+    }
+
+    else {
+        error("Unknown auxillary");
+    }
+}
 
 struct sammycode {
     u64       size;
@@ -199,9 +234,9 @@ struct assembler_data {
         byte size      = 0;                                                                                                    \
         name[ size++ ] = c;                                                                                                    \
         while (((((c = next()) >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z')) || (c == '-') || (c == '_'))               \
-               && (size <= 255)) {                                                                                             \
+               && (size <= 255))                                                                                               \
             name[ size++ ] = c;                                                                                                \
-        }                                                                                                                      \
+                                                                                                                               \
         text--;                                                                                                                \
         name[ size ] = 0;                                                                                                      \
         name;                                                                                                                  \
@@ -210,11 +245,14 @@ struct assembler_data {
 #define add_code(operator, data)                                                                                               \
     result.code[ result.size++ ] = (struct op) { operator, data }
 #define next() (*(text++))
-struct sammycode assemble(char *text, struct assembler_data storage) {
-    struct sammycode result = { .size = 0, .code = { [0] = 0, [64000 - 1] = 0 } };
+struct sammycode assemble(string text, struct assembler_data storage) {
+    struct sammycode result   = { .size = 0, .code = { [0] = 0, [64000 - 1] = 0 } };
+    string           original = text;
+    u64              size     = strlen(text);
 
     char c;
-    while ((c = next()) != null && powered) {
+    while ((text - original < size) && powered) {
+        c = next();
         switch (c) {
             item(' ', {});
             item('\n', {});
@@ -246,34 +284,52 @@ struct sammycode assemble(char *text, struct assembler_data storage) {
 
             item('a' ... 'z', {
                 item('A' ... 'Z', {
-                    item('-', {
-                        item('_', {
-                            string name = get_keyword();
+                    item('_', {
+                        string name = get_keyword();
 
-                            // process keyword
+                        // process keyword
 
-                            char c = next();
-                            if (c == ':') { // create label
-                                storage.labels[ storage.labels_count ].position = result.size;
-                                memcpy(storage.labels[ storage.labels_count++ ].name, name, strlen(name));
-                            }
+                        char c = next();
+                        if (c == ':') { // create label
+                            storage.labels[ storage.labels_count ].position = result.size;
+                            memcpy(storage.labels[ storage.labels_count++ ].name, name, strlen(name));
+                        }
 
-                            else if (eq(name, "dup")) {
-                                add_code(n_dup, 0);
-                            }
+                        else if (eq(name, "dup")) {
+                            add_code(n_dup, 0);
+                        }
 
-                            else if (eq(name, "aux")) {
-                                add_code(d_call_aux, 0);
-                            }
+                        else if (eq(name, "ddup")) {
+                            add_code(nn_dup, 0);
+                        }
 
-                            else if (eq(name, "ret")) {
-                                add_code(ret, 0);
-                            }
+                        else if (eq(name, "putchar")) {
+                            add_code(d_call_aux, 1);
+                        }
 
-                            else {
-                                error("Unknown function '%s'", name);
-                            }
-                        });
+                        else if (eq(name, "log")) {
+                            add_code(d_call_aux, 2);
+                        }
+
+                        else if (eq(name, "trace")) {
+                            add_code(d_call_aux, 3);
+                        }
+
+                        else if (eq(name, "ret")) {
+                            add_code(ret, 0);
+                        }
+
+                        else if (eq(name, "swap")) {
+                            add_code(mmnn_swap, 0);
+                        }
+
+                        else if (eq(name, "pop")) {
+                            add_code(m_pop, 0);
+                        }
+
+                        else {
+                            error("Unknown function '%s'", name);
+                        }
                     });
                 });
             });
@@ -304,7 +360,33 @@ struct sammycode assemble(char *text, struct assembler_data storage) {
                 add_code(d_call, offset);
             });
 
-            item('#', {
+            item('&', {
+                c               = next();
+                string name     = get_keyword();
+                u64    position = -1;
+
+                // look for label
+                for (u64 i = 0; i < storage.labels_count; i++) {
+                    if (eq(storage.labels[ i ].name, name)) {
+                        position = storage.labels[ i ].position;
+                        goto FOUND4;
+                    }
+                }
+
+                // Delegate label resolution to after-assembly
+                storage.label_delegations[ storage.label_delegation_count ].target_position = result.size;
+                add_code(d_jmp, -1);
+                memcpy(storage.label_delegations[ storage.label_delegation_count++ ].name, name, strlen(name));
+                break;
+
+            FOUND4:;
+                // calculate offset
+                i64 offset = position - result.size;
+
+                add_code(d_jmp, offset);
+            });
+
+            item('?', {
                 c               = next();
                 string name     = get_keyword();
                 u64    position = -1;
@@ -319,7 +401,7 @@ struct sammycode assemble(char *text, struct assembler_data storage) {
 
                 // Delegate label resolution to after-assembly
                 storage.label_delegations[ storage.label_delegation_count ].target_position = result.size;
-                add_code(d_call, -1);
+                add_code(d_callnz, -1);
                 memcpy(storage.label_delegations[ storage.label_delegation_count++ ].name, name, strlen(name));
                 break;
 
@@ -330,7 +412,46 @@ struct sammycode assemble(char *text, struct assembler_data storage) {
                 add_code(d_callnz, offset);
             });
 
-            item('$', { add_code(d_call_aux, 0); });
+            item('^', {
+                c               = next();
+                string name     = get_keyword();
+                u64    position = -1;
+
+                // look for label
+                for (u64 i = 0; i < storage.labels_count; i++) {
+                    if (eq(storage.labels[ i ].name, name)) {
+                        position = storage.labels[ i ].position;
+                        goto FOUND3;
+                    }
+                }
+
+                // Delegate label resolution to after-assembly
+                storage.label_delegations[ storage.label_delegation_count ].target_position = result.size;
+                add_code(d_jmpnz, -1);
+                memcpy(storage.label_delegations[ storage.label_delegation_count++ ].name, name, strlen(name));
+                break;
+
+            FOUND3:;
+                // calculate offset
+                i64 offset = position - result.size;
+
+                add_code(d_jmpnz, offset);
+            });
+
+            item('#', while (*text != null && *(++text) != '\n'));
+
+            item('$', add_code(d_call_aux, 0));
+            item('!', add_code(mn_not, 0));
+
+            item('>', add_code(mmn_gt, 0));
+            item('<', add_code(mmn_lt, 0));
+            item('+', add_code(mmn_add, 0));
+            item('-', add_code(mmn_sub, 0));
+            item('%', add_code(mmn_mod, 0));
+            item('*', add_code(mmn_mul, 0));
+            item('/', add_code(mmn_div, 0));
+
+            none(error("Unknown token %c", c));
         }
     }
 
@@ -340,7 +461,7 @@ struct sammycode assemble(char *text, struct assembler_data storage) {
             struct label_delegated label = storage.label_delegations[ i ];
             for (u64 j = 0; j < storage.labels_count; j++) {
                 if (eq(storage.labels[ j ].name, label.name)) {
-                    result.code[ label.target_position ].data = storage.labels[ j ].position;
+                    result.code[ label.target_position ].data = storage.labels[ j ].position - label.target_position;
                     goto TOP_CONTINUE;
                 }
             }
@@ -388,10 +509,11 @@ string read_file(string file_name) {
 }
 
 int main() {
-    aux_function = print_aux;
+    aux_function = aux;
 
     struct sammycode output = assemble(read_file("input.sam"), (struct assembler_data) {});
     // for (u64 i = 0; i < output.size; i++) { printf("{ %s, %i }\n", names[ output.code[ i ].op ], output.code[ i ].data); }
 
     run(output.size, output.code);
+    // for (u64 i = 0; i < main_stack_pointer; i++) printf("- %li\n", main_stack[ i ]);
 }

@@ -1,9 +1,39 @@
-
 @main
 
-print:
-    aux dup #print ret
+print: # print a string to console
+    putchar dup ^print pop ret
+
+newline: # print a newline to console
+    10 putchar ret
+
+fizzbuzz: # run fizzbuzz from 1 to the input argument
+    1 swap dup 1
+    fizzbuzz_start:
+        > ^fizzbuzz_leave
+
+        fizzbuzz_loop:
+            swap
+
+            dup 3 % ^fizzbuzz_skip_one # check divisibility by 3
+            "Fizz" @print
+            fizzbuzz_skip_one:
+
+            dup 5 % ^fizzbuzz_skip_two # check divisibility by 5
+            "Buzz" @print
+            fizzbuzz_skip_two:
+
+            dup 5 % ! ^fizzbuzz_skip_three # check divisibility by 15
+            dup 3 % ! ^fizzbuzz_skip_three
+            dup log
+            fizzbuzz_skip_three:
+
+            @newline
+
+            1 + swap ddup swap
+
+            &fizzbuzz_start
+    fizzbuzz_leave:
+    ret
 
 main:
-    "Hello world!" @print
-    ret
+    50 @fizzbuzz # call fizzbuzz
