@@ -1,0 +1,9 @@
+
+@main
+
+print:
+    aux dup #print ret
+
+main:
+    "Hello world!" @print
+    ret
